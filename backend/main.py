@@ -19,8 +19,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "http://localhost:3001",
-        "https://accent-detector-app.netlify.app",  # Production frontend URL
+        "https://accent-detector-app.netlify.app",
+        "https://*.hf.space",
+        "https://hf.space"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],

@@ -1,0 +1,7 @@
+sdk: fastapi
+hardware:
+  cpu: 2
+  memory: large
+python_version: "3.11"
+system_packages:
+  - "ffmpeg"
