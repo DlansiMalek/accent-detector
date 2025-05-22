@@ -113,7 +113,7 @@ const AccentResults: React.FC<AccentResultsProps> = ({
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
             {Object.entries(probabilities)
               .sort((a, b) => b[1] - a[1]) // Sort by probability (highest first)
-              .filter(([_, value]) => value > 0.05) // Only show significant probabilities
+              // Show all probabilities
               .map(([accentName, probability]) => (
                 <Box key={accentName} sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                   <Typography variant="body2" sx={{ width: '120px', fontWeight: accentName === accent ? 'bold' : 'normal' }}>

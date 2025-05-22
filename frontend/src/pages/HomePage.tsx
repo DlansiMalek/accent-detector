@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Box, Typography, Divider, Alert, Paper, Tab, Tabs } from '@mui/material';
 import VideoUrlInput from '../components/VideoUrlInput';
 import AccentResults from '../components/AccentResults';
+import ProgressBar from '../components/ProgressBar';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
 import LinkIcon from '@mui/icons-material/Link';
 import MicIcon from '@mui/icons-material/Mic';
@@ -14,6 +15,7 @@ const HomePage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tabValue, setTabValue] = useState(0);
+  const [sessionId, setSessionId] = useState<string | undefined>(undefined);
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
@@ -25,10 +27,15 @@ const HomePage: React.FC = () => {
   const handleUrlSubmit = async (url: string) => {
     setLoading(true);
     setError(null);
+    setSessionId(undefined);
     
     try {
       const response = await analyzeVideoUrl(url);
       setResults(response);
+      // Store the session ID for WebSocket connection
+      if (response.session_id) {
+        setSessionId(response.session_id);
+      }
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to analyze video. Please try again.');
       setResults(null);
@@ -40,10 +47,15 @@ const HomePage: React.FC = () => {
   const handleFileUpload = async (file: File) => {
     setLoading(true);
     setError(null);
+    setSessionId(undefined);
     
     try {
       const response = await analyzeVideoFile(file);
       setResults(response);
+      // Store the session ID for WebSocket connection
+      if (response.session_id) {
+        setSessionId(response.session_id);
+      }
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to analyze video. Please try again.');
       setResults(null);
@@ -111,12 +123,16 @@ const HomePage: React.FC = () => {
       {tabValue === 2 && (
         <VoiceRecorder onRecordingComplete={handleAudioRecording} isLoading={loading} />
       )}
+      
+      <ProgressBar isLoading={loading} />
 
       {results && !loading && (
         <AccentResults
           accent={results.accent}
           confidence={results.confidence}
           explanation={results.explanation}
+          transcription={results.transcription}
+          probabilities={results.probabilities}
         />
       )}
     </Box>

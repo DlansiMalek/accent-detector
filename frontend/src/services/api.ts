@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-// Get the API URL from environment variables or use the proxy in development
-const API_URL = process.env.REACT_APP_API_URL || '';
+// Get the API URL from environment variables or use the ngrok URL for production
+const API_URL = process.env.REACT_APP_API_URL || 'https://c37d-196-226-134-164.ngrok-free.app';
 
 // Create an axios instance with the appropriate base URL
 const api = axios.create({
@@ -9,8 +9,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  // Adding a timeout to avoid long-hanging requests
-  timeout: 30000,
+  // No timeout to allow for full video processing
 });
 
 // Define the response types
@@ -18,6 +17,9 @@ export interface AccentAnalysisResponse {
   accent: string;
   confidence: number;
   explanation?: string;
+  transcription?: string;
+  probabilities?: { [key: string]: number };
+  session_id?: string; // Session ID for WebSocket connection
 }
 
 // API methods

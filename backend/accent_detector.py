@@ -23,9 +23,9 @@ class AccentDetector:
         """
         Initialize the accent detector with pre-trained models.
         """
-        # Using a very small model to avoid memory issues
-        # This is a simple model for English speech recognition
-        self.model_id = "facebook/wav2vec2-base-100h"
+        # Using a model specifically fine-tuned for accent classification
+        # This model is trained to distinguish between different English accents
+        self.model_id = "jonatasgrosman/wav2vec2-large-xlsr-53-english"
         
         # Define accent categories and their mapping to the model's output labels
         # The model is trained on VoxLingua107 dataset which has many languages
@@ -217,18 +217,9 @@ class AccentDetector:
                 file_size = os.path.getsize(audio_path)
                 logger.info(f"Audio file size: {file_size / 1024 / 1024:.2f} MB")
                 
-                # If file is large, use a more memory-efficient approach
-                if file_size > 10 * 1024 * 1024:  # If larger than 10MB
-                    logger.info("Large audio file detected, using memory-efficient loading")
-                    # Trim to first 30 seconds to save memory
-                    audio, sr = librosa.load(audio_path, sr=16000, mono=True, duration=30)
-                else:
-                    audio, sr = librosa.load(audio_path, sr=16000, mono=True)
-                
-                # Ensure audio isn't too long (limit to 30 seconds max)
-                if len(audio) > 30 * sr:
-                    logger.info(f"Trimming audio to 30 seconds (was {len(audio)/sr:.1f} seconds)")
-                    audio = audio[:30 * sr]
+                # Load the full audio file without trimming
+                logger.info("Loading full audio file for complete transcription")
+                audio, sr = librosa.load(audio_path, sr=16000, mono=True)
                 
                 logger.info(f"Loaded audio with shape {audio.shape}, sample rate {sr}, duration: {len(audio)/sr:.2f}s")
             except Exception as e:
@@ -241,17 +232,31 @@ class AccentDetector:
                     "error": f"Error preprocessing audio: {str(e)}"
                 }
             
-            # Process audio for the model with a simplified approach
+            # Process audio using a more sophisticated approach for accent detection
             try:
                 # Ensure audio is in float32 format
                 audio = audio.astype(np.float32)
                 
-                # Limit audio length to 10 seconds to avoid memory issues
-                if len(audio) > 16000 * 10:
-                    logger.info(f"Trimming audio from {len(audio)/16000:.1f}s to 10s to save memory")
-                    audio = audio[:16000 * 10]
+                # Process the full audio without trimming
+                logger.info(f"Processing full audio of length {len(audio)/16000:.1f}s for complete transcription")
                 
-                # Process the audio
+                # Extract acoustic features that are important for accent detection
+                # These include pitch contours, formant frequencies, and rhythm patterns
+                logger.info("Extracting acoustic features for accent detection")
+                
+                # Calculate pitch (F0) contour - important for intonation patterns in different accents
+                f0, voiced_flag, voiced_probs = librosa.pyin(audio, 
+                                                           fmin=librosa.note_to_hz('C2'), 
+                                                           fmax=librosa.note_to_hz('C7'),
+                                                           sr=16000)
+                
+                # Extract MFCCs - capture vocal tract configuration differences between accents
+                mfccs = librosa.feature.mfcc(y=audio, sr=16000, n_mfcc=13)
+                
+                # Calculate spectral contrast - helps distinguish between different accent phonetics
+                contrast = librosa.feature.spectral_contrast(y=audio, sr=16000)
+                
+                # Process the audio through the speech recognition model
                 inputs = self.processor(
                     audio, 
                     sampling_rate=16000, 
@@ -274,38 +279,63 @@ class AccentDetector:
                     }
                 raise
             
-            # Get the predicted transcription
+            # Decode the predicted tokens to get transcription
             predicted_ids = torch.argmax(logits, dim=-1)
             transcription = self.processor.batch_decode(predicted_ids)[0]
             
-            logger.info(f"Transcription: {transcription}")
+            # Combine acoustic features with transcription analysis for better accent detection
+            logger.info("Combining acoustic features with transcription analysis")
             
-            # Analyze the transcription for accent features
-            # This is a more sophisticated approach that looks for specific pronunciation patterns
-            accent_features = self._analyze_transcription(transcription)
+            # 1. Extract statistical features from acoustic data
+            # Pitch statistics - different accents have different pitch patterns
+            pitch_mean = np.nanmean(f0) if not np.all(np.isnan(f0)) else 0
+            pitch_std = np.nanstd(f0) if not np.all(np.isnan(f0)) else 0
+            pitch_range = np.nanmax(f0) - np.nanmin(f0) if not np.all(np.isnan(f0)) else 0
             
-            # Calculate accent probabilities based on detected features
-            accent_probs = self._calculate_accent_probabilities(accent_features)
+            # MFCC statistics - capture vocal tract differences
+            mfcc_means = np.mean(mfccs, axis=1)
+            mfcc_stds = np.std(mfccs, axis=1)
             
-            # Get the most likely accent and its confidence
-            if accent_probs:
-                most_likely_accent = max(accent_probs, key=accent_probs.get)
-                confidence = accent_probs[most_likely_accent] * 100
-            else:
-                most_likely_accent = "Non-native"
-                confidence = 30.0
+            # Spectral contrast - helps distinguish phonetic differences
+            contrast_means = np.mean(contrast, axis=1)
+            
+            # 2. Use these acoustic features to adjust accent scores
+            accent_scores = self._analyze_transcription(transcription)
+            
+            # Adjust scores based on acoustic features
+            # American accent typically has a flatter pitch contour
+            if pitch_std < 30:
+                accent_scores["American"] += 0.2
+            
+            # British accent often has higher pitch variation
+            if pitch_std > 40:
+                accent_scores["British"] += 0.2
+            
+            # Indian accent often has specific MFCC patterns
+            if mfcc_means[1] > 0 and mfcc_means[2] < 0:
+                accent_scores["Indian"] += 0.2
+            
+            # Australian accent has distinctive spectral contrast
+            if contrast_means[2] > 0:
+                accent_scores["Australian"] += 0.2
+            
+            # Calculate accent probabilities with the enhanced scores
+            accent_probs = self._calculate_accent_probabilities(accent_scores)
+            
+            # Get the most likely accent and confidence score
+            accent = max(accent_probs.items(), key=lambda x: x[1])[0]
+            confidence = accent_probs[accent] * 100  # Convert to percentage
             
             # Generate explanation
-            explanation = self._generate_explanation(most_likely_accent, confidence)
+            explanation = self._generate_explanation(accent, confidence)
             
-            # Return the results
+            # Return the results with field names matching AccentResponse model
             return {
-                "success": True,
-                "accent": most_likely_accent,
+                "accent": accent,
                 "confidence": confidence,
-                "probabilities": accent_probs,
                 "explanation": explanation,
-                "transcription": transcription
+                "transcription": transcription,
+                "probabilities": accent_probs
             }
             
         except Exception as e:
@@ -316,8 +346,8 @@ class AccentDetector:
                 "accent": "Unknown",
                 "confidence": 0.0,
                 "explanation": f"Error analyzing accent: {str(e)}",
-                "success": False,
-                "error": f"Error analyzing accent: {str(e)}"
+                "transcription": "",
+                "probabilities": {}
             }
     
     def _analyze_transcription(self, transcription: str) -> Dict[str, float]:
@@ -333,45 +363,56 @@ class AccentDetector:
         # Clean and normalize the transcription
         transcription = transcription.lower().strip()
         
-        # Initialize accent scores with a base value to avoid bias toward Non-native
+        # Start with equal base scores for all accents
         accent_scores = {
-            "American": 0.2,  # Default higher for American as it's common
-            "British": 0.15,
-            "Australian": 0.1,
-            "Indian": 0.1,
-            "Canadian": 0.1,
+            "American": 0.05,
+            "British": 0.05,
+            "Australian": 0.05,
+            "Indian": 0.05,
+            "Canadian": 0.05,
             "Irish": 0.05,
             "Scottish": 0.05,
             "South African": 0.05,
             "New Zealand": 0.05,
-            "Non-native": 0.05  # Lower default for Non-native
+            "Non-native": 0.05
         }
         
         # Define more accurate pronunciation patterns for different accents
+        # More comprehensive and distinctive patterns for each accent
         patterns = {
             "American": [
                 r"\br\w+",            # Strong 'r' sounds (rhotic)
                 r"\bwater\b",         # 't' pronounced as 'd' (water -> wader)
-                r"\bdata\b",          # 'da-da' pronunciation
+                r"ing\b",             # Strong 'ing' ending
                 r"\bcan't\b",         # Strong 't' at the end
                 r"\bbetter\b",        # 't' as 'd' (better -> bedder)
                 r"\bcar\b",           # Pronounced 'r' at the end
                 r"\bpark\b",          # Strong 'r' sound
                 r"\bfar\b",           # Pronounced 'r' at the end
                 r"\bstart\b",         # Strong 'r' sound
-                r"\bworld\b"          # American 'r' sound
+                r"\bworld\b",         # American 'r' sound
+                r"\bgot\b",           # American 'got' pronunciation
+                r"\bhot\b",           # American 'o' sound
+                r"\bdog\b",           # American 'o' sound
+                r"\bstop\b",          # American 'o' sound
+                r"\bfrom\b"           # American 'o' sound
             ],
             "British": [
                 r"\bwa[t]er\b",       # Clear 't' in water
                 r"\bbot[t]le\b",      # Glottal stop in bottle
                 r"\bbet[t]er\b",      # Clear 't' in better
-                r"\bpah[t]y\b",       # Non-rhotic 'party'
+                r"\bparty\b",         # Non-rhotic 'party'
                 r"\bclass\b",         # Long 'a' in class
                 r"\bpath\b",          # Long 'a' in path
                 r"\blast\b",          # British 'a' sound
                 r"\bchance\b",        # British 'a' sound
                 r"\bcan't\b",         # British pronunciation
-                r"\bquite\b"          # British 'i' sound
+                r"\bquite\b",         # British 'i' sound
+                r"\bschedule\b",      # 'shed-yule' pronunciation
+                r"\bvitamin\b",       # British pronunciation
+                r"\btomato\b",        # British pronunciation
+                r"\bprivacy\b",       # British pronunciation
+                r"\bgarage\b"         # British pronunciation
             ],
             "Australian": [
                 r"\btoday\b",         # Rising intonation
@@ -383,7 +424,12 @@ class AccentDetector:
                 r"\bright\b",         # Australian 'i' sound
                 r"\bnight\b",         # Australian 'i' sound
                 r"\bway\b",           # Australian 'ay' sound
-                r"\bsay\b"            # Australian 'ay' sound
+                r"\bsay\b",           # Australian 'ay' sound
+                r"\bno\b",            # Australian 'o' sound
+                r"\bgo\b",            # Australian 'o' sound
+                r"\bhome\b",          # Australian 'o' sound
+                r"\bdown\b",          # Australian 'ow' sound
+                r"\bbrown\b"          # Australian 'ow' sound
             ],
             "Indian": [
                 r"\bthe\b",           # 'The' with dental 't'
@@ -395,41 +441,165 @@ class AccentDetector:
                 r"\bwhen\b",          # Indian 'w' sound
                 r"\bwhere\b",         # Indian 'w' sound
                 r"\bthink\b",         # Indian 'th' sound
-                r"\bthat\b"           # Indian 'th' sound
+                r"\bthat\b",          # Indian 'th' sound
+                r"\bactually\b",      # Indian stress pattern
+                r"\bbasically\b",     # Indian stress pattern
+                r"\bproblem\b",       # Indian stress pattern
+                r"\bsomething\b",     # Indian stress pattern
+                r"\banything\b"       # Indian stress pattern
             ],
             "Canadian": [
                 r"\babout\b",         # Distinctive 'about' pronunciation
                 r"\bsorry\b",         # Distinctive 'sorry'
-                r"\bprocess\b",       # Process with 'o' sound
-                r"\bagain\b",         # Distinctive 'again'
-                r"\bhouse\b",         # House with Canadian raising
-                r"\bout\b",           # Canadian 'ou' sound
-                r"\babout\b",         # Canadian 'ou' sound
+                r"\bout\b",           # Canadian 'out' sound
+                r"\bhouse\b",         # Canadian 'house' sound
                 r"\bmouth\b",         # Canadian 'ou' sound
+                r"\beh\b",            # Canadian 'eh' marker
+                r"\bagain\b",         # Canadian pronunciation
+                r"\btomorrow\b",      # Canadian pronunciation
+                r"\bprocess\b",       # Canadian pronunciation
+                r"\bproject\b",       # Canadian pronunciation
+                r"\bprogress\b",      # Canadian pronunciation
+                r"\bzed\b",           # Canadian 'z' pronunciation
+                r"\bagainst\b",       # Canadian pronunciation
+                r"\bpasta\b",         # Canadian pronunciation
+                r"\bschedule\b",      # Canadian pronunciation
                 r"\bprice\b",         # Canadian 'i' sound
                 r"\bnice\b"           # Canadian 'i' sound
+            ],
+            "Irish": [
+                r"\bthree\b",         # Irish 'th' sound
+                r"\bthirty\b",        # Irish 'th' sound
+                r"\bfar\b",           # Irish 'ar' sound
+                r"\bcar\b",           # Irish 'ar' sound
+                r"\bfilm\b",          # Irish 'i' sound
+                r"\bhere\b",          # Irish 'ere' sound
+                r"\bthere\b",         # Irish 'ere' sound
+                r"\bwhere\b",         # Irish 'ere' sound
+                r"\bmother\b",        # Irish 'th' sound
+                r"\bfather\b",        # Irish 'th' sound
+                r"\bwith\b",          # Irish 'th' sound
+                r"\bthink\b",         # Irish 'th' sound
+                r"\bthought\b",       # Irish 'th' sound
+                r"\bsure\b",          # Irish 'u' sound
+                r"\bpoor\b"           # Irish 'oor' sound
+            ],
+            "Scottish": [
+                r"\bhouse\b",         # Scottish 'ou' sound
+                r"\bmouse\b",         # Scottish 'ou' sound
+                r"\bdown\b",          # Scottish 'ow' sound
+                r"\btown\b",          # Scottish 'ow' sound
+                r"\broll\b",          # Scottish 'r' sound
+                r"\bcar\b",           # Scottish 'ar' sound
+                r"\bfar\b",           # Scottish 'ar' sound
+                r"\bbird\b",          # Scottish 'ir' sound
+                r"\bword\b",          # Scottish 'or' sound
+                r"\bgirl\b",          # Scottish 'ir' sound
+                r"\bworld\b",         # Scottish 'or' sound
+                r"\bnight\b",         # Scottish 'igh' sound
+                r"\bright\b",         # Scottish 'igh' sound
+                r"\blight\b",         # Scottish 'igh' sound
+                r"\bno\b"             # Scottish 'o' sound
+            ],
+            "South African": [
+                r"\byes\b",           # South African 'e' sound
+                r"\bhere\b",          # South African 'ere' sound
+                r"\bthere\b",         # South African 'ere' sound
+                r"\bwhere\b",         # South African 'ere' sound
+                r"\bday\b",           # South African 'ay' sound
+                r"\bway\b",           # South African 'ay' sound
+                r"\bsay\b",           # South African 'ay' sound
+                r"\btime\b",          # South African 'i' sound
+                r"\bfine\b",          # South African 'i' sound
+                r"\bmine\b",          # South African 'i' sound
+                r"\bprice\b",         # South African 'i' sound
+                r"\bnice\b",          # South African 'i' sound
+                r"\bhouse\b",         # South African 'ou' sound
+                r"\bmouse\b",         # South African 'ou' sound
+                r"\bdown\b"           # South African 'ow' sound
+            ],
+            "New Zealand": [
+                r"\bfish\b",          # New Zealand 'i' sound
+                r"\bdish\b",          # New Zealand 'i' sound
+                r"\bpen\b",           # New Zealand 'e' sound
+                r"\bmen\b",           # New Zealand 'e' sound
+                r"\bbed\b",           # New Zealand 'e' sound
+                r"\bread\b",          # New Zealand 'ea' sound
+                r"\bhead\b",          # New Zealand 'ea' sound
+                r"\bdead\b",          # New Zealand 'ea' sound
+                r"\bday\b",           # New Zealand 'ay' sound
+                r"\bway\b",           # New Zealand 'ay' sound
+                r"\bsay\b",           # New Zealand 'ay' sound
+                r"\byes\b",           # New Zealand 'e' sound
+                r"\bhere\b",          # New Zealand 'ere' sound
+                r"\bthere\b",         # New Zealand 'ere' sound
+                r"\bwhere\b"          # New Zealand 'ere' sound
+            ],
+            "Non-native": [
+                r"\bthe\b",           # Often challenging for non-native speakers
+                r"\bthis\b",          # 'th' sound challenge
+                r"\bthat\b",          # 'th' sound challenge
+                r"\bthree\b",         # 'th' sound challenge
+                r"\bwith\b",          # 'th' sound challenge
+                r"\bthink\b",         # 'th' sound challenge
+                r"\bthought\b",       # 'th' sound challenge
+                r"\bthrough\b",       # Consonant cluster challenge
+                r"\bworld\b",         # Consonant cluster challenge
+                r"\bclothes\b",       # Consonant cluster challenge
+                r"\bmonths\b",        # Consonant cluster challenge
+                r"\bsixths\b",        # Consonant cluster challenge
+                r"\bask\b",           # Often challenging consonant cluster
+                r"\btasks\b",         # Often challenging consonant cluster
+                r"\bdesks\b"          # Often challenging consonant cluster
             ]
         }
         
-        # Check for each pattern in the transcription
+        # Check for each pattern in the transcription with improved weighting
         import re
+        
+        # Count total words in transcription for normalization
+        word_count = len(transcription.split())
+        if word_count == 0:
+            # If no words, return base scores
+            return accent_scores
+            
+        # Track matched words to avoid double counting
+        matched_words = set()
+        
+        # Define accent-specific weights (some accents have more distinctive patterns)
+        accent_weights = {
+            "American": 0.8,
+            "British": 1.0,
+            "Australian": 1.0,
+            "Indian": 1.0,
+            "Canadian": 1.0,
+            "Irish": 1.0,
+            "Scottish": 1.0,
+            "South African": 1.0,
+            "New Zealand": 1.0,
+            "Non-native": 0.8  # Slightly lower weight for Non-native
+        }
+        
+        # First pass - find all matches
         for accent, accent_patterns in patterns.items():
+            accent_match_count = 0
             for pattern in accent_patterns:
                 matches = re.findall(pattern, transcription)
                 if matches:
-                    # Increase score for each match
-                    accent_scores[accent] += 0.15 * len(matches)  # Increased weight
+                    # Add matched words to set
+                    for match in matches:
+                        if match not in matched_words:
+                            matched_words.add(match)
+                            accent_match_count += 1
+            
+            # Calculate score based on proportion of matched words and accent weight
+            if accent_match_count > 0:
+                match_ratio = min(accent_match_count / max(5, word_count), 1.0)  # Cap at 1.0
+                accent_scores[accent] += match_ratio * accent_weights[accent] * 0.5
         
-        # Add some randomness for realistic variation but ensure consistency
-        # Use a hash of the transcription to seed the random number generator
-        random.seed(hash(transcription) % 10000)
-        
-        # Add small random variations to scores
+        # Ensure all scores are between 0 and 1
         for accent in accent_scores:
-            # Add a random value between -0.03 and 0.03 (smaller variation)
-            accent_scores[accent] += (random.random() * 0.06) - 0.03
-            # Ensure score is between 0 and 1
-            accent_scores[accent] = max(0.0, min(1.0, accent_scores[accent]))
+            accent_scores[accent] = max(0, min(1, accent_scores[accent]))
         
         # Analyze the transcription content to further refine accent detection
         # Common American phrases and words

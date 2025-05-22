@@ -1,16 +1,18 @@
 import os
 import tempfile
 import uuid
-from typing import Optional
+import asyncio
+from typing import Optional, Dict, Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, HttpUrl
 
 from accent_detector import AccentDetector
 from video_processor import VideoProcessor
+from progress_tracker import progress_tracker
 
 app = FastAPI(title="Accent Detector API")
 
@@ -21,6 +23,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:3001",
         "https://accent-detector-app.netlify.app",  # Production frontend URL
+        "*",  # Allow all origins when using ngrok
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -30,6 +33,9 @@ app.add_middleware(
 # Initialize our services
 video_processor = VideoProcessor()
 accent_detector = AccentDetector()
+
+# Track active analysis sessions
+active_sessions: Dict[str, Dict[str, Any]] = {}
 
 
 class VideoUrlRequest(BaseModel):
@@ -61,15 +67,27 @@ async def root():
 
 @app.post("/analyze/url", response_model=AccentResponse)
 async def analyze_from_url(request: VideoUrlRequest):
-    """
-    Analyze accent from a video URL
-    """
+    """Analyze accent from a video URL"""
     try:
+        # Create a unique session ID for tracking progress
+        session_id = str(uuid.uuid4())
+        progress_tracker.start_session(session_id)
+        
         # Extract audio from the video URL
+        await progress_tracker.update_progress(session_id, 10, "Downloading audio from URL...")
         audio_path = await video_processor.extract_audio_from_url(request.url)
+        
+        # Update progress after audio extraction
+        await progress_tracker.update_progress(session_id, 40, "Processing audio...")
         
         # Analyze the accent
         result = accent_detector.analyze_accent(audio_path)
+        
+        # Complete the session
+        await progress_tracker.complete_session(session_id, result)
+        
+        # Add session ID to the result for client reference
+        result["session_id"] = session_id
         
         # Clean up the temporary file
         if os.path.exists(audio_path):
@@ -139,5 +157,26 @@ async def analyze_from_audio(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    await websocket.accept()
+    progress_tracker.set_websocket(session_id, websocket)
+    
+    try:
+        while True:
+            # Keep the connection open and wait for messages
+            data = await websocket.receive_text()
+            # We could process client messages here if needed
+    except WebSocketDisconnect:
+        # Handle client disconnect
+        pass
+
+
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app", 
+        host="0.0.0.0", 
+        port=8000, 
+        reload=True,
+        timeout_keep_alive=600  # 10 minute timeout for full video processing
+    )

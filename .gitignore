@@ -55,3 +55,6 @@ Thumbs.db
 
 # Hugging Face model cache
 model_cache/
+
+# Local Netlify folder
+.netlify
