@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: accent-detector-api
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && gunicorn -c gunicorn.conf.py main:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.7
+      - key: PORT
+        value: 10000
+    autoDeploy: false
+    healthCheckPath: /
+    disk:
+      name: accent-detector-cache
+      mountPath: /opt/render/project/src/backend/model_cache
+      sizeGB: 1

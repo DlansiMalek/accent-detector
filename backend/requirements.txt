@@ -1,0 +1,27 @@
+# Web framework and server
+fastapi==0.110.0
+uvicorn==0.27.1
+gunicorn==21.2.0
+python-multipart==0.0.9
+pydantic==2.6.1
+
+# Audio processing
+pydub==0.25.1
+librosa==0.10.1
+resampy==0.4.2
+soundfile==0.12.1
+
+# Video processing
+requests==2.31.0
+yt-dlp==2023.11.16
+
+# Machine learning and data processing
+numpy==1.26.3
+torch==2.2.0
+transformers==4.37.2
+
+# Configuration
+python-dotenv==1.0.0
+
+# Regex (standard library, included for clarity)
+# re
